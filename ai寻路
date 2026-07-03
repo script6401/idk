@@ -1,0 +1,659 @@
+-- 纯客户端AI自动寻路（完整修复版）
+local player = game.Players.LocalPlayer
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local PathfindingService = game:GetService("PathfindingService")
+
+-- ========== 配置 ==========
+local CONFIG = {
+    MoveSpeed = 16,
+    WaypointRadius = 2.5,
+    MaxDistance = 500,
+    ArrivalRadius = 3.5,
+}
+
+-- ========== 变量 ==========
+local waypoints = {}
+local currentWaypointIndex = 1
+local isMoving = false
+local moveConnection = nil
+local selectionBox = nil
+local currentTarget = nil
+local targetPosition = nil
+local isStopped = false  -- 新增：停止标志
+
+-- ========== 创建 GUI ==========
+local function createGUI()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AutoPathGUI"
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+    screenGui.ResetOnSpawn = false
+    
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 220, 0, 340)
+    mainFrame.Position = UDim2.new(0.02, 0, 0.15, 0)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 40)
+    mainFrame.BackgroundTransparency = 0.1
+    mainFrame.BorderSizePixel = 2
+    mainFrame.BorderColor3 = Color3.fromRGB(80, 180, 255)
+    mainFrame.Active = true
+    mainFrame.Draggable = true
+    mainFrame.ClipsDescendants = true
+    mainFrame.Parent = screenGui
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = mainFrame
+    
+    local titleBar = Instance.new("Frame")
+    titleBar.Size = UDim2.new(1, 0, 0, 40)
+    titleBar.BackgroundColor3 = Color3.fromRGB(50, 120, 200)
+    titleBar.BackgroundTransparency = 0.2
+    titleBar.Parent = mainFrame
+    
+    local titleCorner = Instance.new("UICorner")
+    titleCorner.CornerRadius = UDim.new(0, 10)
+    titleCorner.Parent = titleBar
+    
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -40, 1, 0)
+    title.Position = UDim2.new(0, 10, 0, 0)
+    title.Text = "🤖 自动寻路"
+    title.TextColor3 = Color3.new(1, 1, 1)
+    title.TextSize = 18
+    title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.BackgroundTransparency = 1
+    title.Parent = titleBar
+    
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 35, 1, 0)
+    closeBtn.Position = UDim2.new(1, -35, 0, 0)
+    closeBtn.Text = "✕"
+    closeBtn.TextColor3 = Color3.new(1, 1, 1)
+    closeBtn.TextSize = 18
+    closeBtn.BackgroundTransparency = 1
+    closeBtn.BorderSizePixel = 0
+    closeBtn.Parent = titleBar
+    closeBtn.MouseButton1Click:Connect(function()
+        mainFrame.Visible = not mainFrame.Visible
+    end)
+    
+    local content = Instance.new("Frame")
+    content.Size = UDim2.new(1, -20, 1, -50)
+    content.Position = UDim2.new(0, 10, 0, 50)
+    content.BackgroundTransparency = 1
+    content.Parent = mainFrame
+    
+    local layout = Instance.new("UIListLayout")
+    layout.Parent = content
+    layout.Padding = UDim.new(0, 8)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Name = "StatusLabel"
+    statusLabel.Size = UDim2.new(1, 0, 0, 35)
+    statusLabel.Text = "🔍 点击物体移动"
+    statusLabel.TextColor3 = Color3.fromRGB(200, 220, 255)
+    statusLabel.TextSize = 14
+    statusLabel.TextWrapped = true
+    statusLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0, 0.3)
+    statusLabel.Parent = content
+    
+    local statusCorner = Instance.new("UICorner")
+    statusCorner.CornerRadius = UDim.new(0, 5)
+    statusCorner.Parent = statusLabel
+    
+    local targetLabel = Instance.new("TextLabel")
+    targetLabel.Name = "TargetLabel"
+    targetLabel.Size = UDim2.new(1, 0, 0, 30)
+    targetLabel.Text = "📍 未选择目标"
+    targetLabel.TextColor3 = Color3.fromRGB(150, 200, 150)
+    targetLabel.TextSize = 13
+    targetLabel.TextWrapped = true
+    targetLabel.BackgroundTransparency = 1
+    targetLabel.Parent = content
+    
+    local debugLabel = Instance.new("TextLabel")
+    debugLabel.Name = "DebugLabel"
+    debugLabel.Size = UDim2.new(1, 0, 0, 25)
+    debugLabel.Text = "🔧 就绪"
+    debugLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    debugLabel.TextSize = 11
+    debugLabel.TextWrapped = true
+    debugLabel.BackgroundTransparency = 1
+    debugLabel.Parent = content
+    
+    local btnFrame = Instance.new("Frame")
+    btnFrame.Size = UDim2.new(1, 0, 0, 85)
+    btnFrame.BackgroundTransparency = 1
+    btnFrame.Parent = content
+    
+    local btnLayout = Instance.new("UIListLayout")
+    btnLayout.Parent = btnFrame
+    btnLayout.Padding = UDim.new(0, 5)
+    btnLayout.FillDirection = Enum.FillDirection.Horizontal
+    btnLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    
+    local stopBtn = Instance.new("TextButton")
+    stopBtn.Size = UDim2.new(0, 85, 0, 35)
+    stopBtn.Text = "🛑 停止"
+    stopBtn.TextColor3 = Color3.new(1, 1, 1)
+    stopBtn.TextSize = 14
+    stopBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    stopBtn.BorderSizePixel = 0
+    stopBtn.Parent = btnFrame
+    
+    local stopCorner = Instance.new("UICorner")
+    stopCorner.CornerRadius = UDim.new(0, 5)
+    stopCorner.Parent = stopBtn
+    
+    stopBtn.MouseButton1Click:Connect(function()
+        stopMoving()
+        statusLabel.Text = "⏹️ 已停止"
+        targetLabel.Text = "📍 已取消"
+        debugLabel.Text = "🔧 手动停止"
+        if selectionBox then
+            selectionBox:Destroy()
+            selectionBox = nil
+        end
+        print("🛑 停止按钮触发")
+    end)
+    
+    local resetBtn = Instance.new("TextButton")
+    resetBtn.Size = UDim2.new(0, 85, 0, 35)
+    resetBtn.Text = "📷 重置视角"
+    resetBtn.TextColor3 = Color3.new(1, 1, 1)
+    resetBtn.TextSize = 14
+    resetBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+    resetBtn.BorderSizePixel = 0
+    resetBtn.Parent = btnFrame
+    
+    local resetCorner = Instance.new("UICorner")
+    resetCorner.CornerRadius = UDim.new(0, 5)
+    resetCorner.Parent = resetBtn
+    
+    resetBtn.MouseButton1Click:Connect(function()
+        local char = player.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            workspace.CurrentCamera.CameraSubject = char.HumanoidRootPart
+        end
+    end)
+    
+    -- 进度条
+    local progressFrame = Instance.new("Frame")
+    progressFrame.Size = UDim2.new(1, 0, 0, 8)
+    progressFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    progressFrame.Parent = content
+    
+    local progressCorner = Instance.new("UICorner")
+    progressCorner.CornerRadius = UDim.new(0, 4)
+    progressCorner.Parent = progressFrame
+    
+    local progressBar = Instance.new("Frame")
+    progressBar.Name = "ProgressBar"
+    progressBar.Size = UDim2.new(0, 0, 1, 0)
+    progressBar.BackgroundColor3 = Color3.fromRGB(80, 200, 255)
+    progressBar.Parent = progressFrame
+    
+    local progressCorner2 = Instance.new("UICorner")
+    progressCorner2.CornerRadius = UDim.new(0, 4)
+    progressCorner2.Parent = progressBar
+    
+    return {
+        ScreenGui = screenGui,
+        MainFrame = mainFrame,
+        StatusLabel = statusLabel,
+        TargetLabel = targetLabel,
+        DebugLabel = debugLabel,
+        ProgressBar = progressBar
+    }
+end
+
+-- ========== 核心寻路函数 ==========
+
+-- 停止移动（修复版 - 确保彻底停止）
+function stopMoving()
+    print("🛑 执行停止...")
+    isMoving = false
+    isStopped = true
+    
+    if moveConnection then
+        moveConnection:Disconnect()
+        moveConnection = nil
+    end
+    
+    local char = player.Character
+    if char then
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            -- 停止移动
+            humanoid:MoveTo(char.HumanoidRootPart.Position)
+            humanoid.WalkSpeed = 16
+            humanoid.AutoRotate = true
+        end
+    end
+    
+    waypoints = {}
+    currentWaypointIndex = 1
+    currentTarget = nil
+    targetPosition = nil
+    
+    print("✅ 已完全停止")
+end
+
+local function createSelectionBox(part)
+    if selectionBox then
+        selectionBox:Destroy()
+        selectionBox = nil
+    end
+    if part and part.Parent then
+        selectionBox = Instance.new("SelectionBox")
+        selectionBox.Adornee = part
+        selectionBox.Color3 = Color3.fromRGB(0, 255, 255)
+        selectionBox.LineThickness = 0.05
+        selectionBox.Parent = part
+    end
+end
+
+-- 获取有效目标位置
+local function getTargetPosition(target)
+    if not target then
+        return nil
+    end
+    
+    -- 如果是 Part
+    if target:IsA("BasePart") then
+        return target.Position
+    end
+    
+    -- 如果是 Model
+    if target:IsA("Model") then
+        local root = target:FindFirstChild("HumanoidRootPart")
+        if root and root:IsA("BasePart") then
+            return root.Position
+        end
+        for _, child in ipairs(target:GetChildren()) do
+            if child:IsA("BasePart") then
+                return child.Position
+            end
+        end
+    end
+    
+    -- 递归查找
+    for _, child in ipairs(target:GetChildren()) do
+        local pos = getTargetPosition(child)
+        if pos then
+            return pos
+        end
+    end
+    
+    return nil
+end
+
+-- 验证目标是否有效
+local function isValidTarget(target)
+    if not target or not target.Parent then
+        return false
+    end
+    
+    if target:IsA("BasePart") then
+        return true
+    end
+    
+    return getTargetPosition(target) ~= nil
+end
+
+-- 计算路径
+local function calculatePath(startPos, endPos)
+    if not startPos or not endPos then
+        return nil
+    end
+    
+    local distance = (startPos - endPos).Magnitude
+    if distance < CONFIG.WaypointRadius then
+        return { endPos }
+    end
+    
+    if distance > CONFIG.MaxDistance then
+        return nil
+    end
+    
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2,
+        AgentHeight = 5,
+        AgentCanJump = true,
+        AgentMaxSlope = 45,
+        WaypointSpacing = 3,
+    })
+    
+    local success = pcall(function()
+        path:ComputeAsync(startPos, endPos)
+    end)
+    
+    if not success or path.Status ~= Enum.PathStatus.Success then
+        return { endPos }
+    end
+    
+    local pathWaypoints = path:GetWaypoints()
+    if #pathWaypoints == 0 then
+        return { endPos }
+    end
+    
+    local result = {}
+    for i, wp in ipairs(pathWaypoints) do
+        table.insert(result, wp.Position)
+    end
+    return result
+end
+
+-- 开始移动到目标（修复版）
+local function moveToTarget(target)
+    -- 重置停止标志
+    isStopped = false
+    
+    -- 验证目标
+    if not isValidTarget(target) then
+        print("❌ 无效目标")
+        return false
+    end
+    
+    local char = player.Character
+    if not char or not char.Parent then
+        print("❌ 角色不存在")
+        return false
+    end
+    
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    local rootPart = char:FindFirstChild("HumanoidRootPart")
+    
+    if not humanoid or not rootPart then
+        print("❌ 找不到 Humanoid 或 RootPart")
+        return false
+    end
+    
+    -- 获取目标位置
+    targetPosition = getTargetPosition(target)
+    if not targetPosition then
+        print("❌ 无法获取目标位置")
+        return false
+    end
+    
+    local startPos = rootPart.Position
+    local distance = (startPos - targetPosition).Magnitude
+    
+    print(string.format("📏 距离: %.1f 单位", distance))
+    
+    if distance < CONFIG.ArrivalRadius then
+        print("✅ 已在目标位置")
+        return true
+    end
+    
+    if distance > CONFIG.MaxDistance then
+        print("⚠️ 目标太远")
+        return false
+    end
+    
+    -- 停止当前移动
+    stopMoving()
+    isStopped = false
+    
+    -- 计算路径
+    local pathPoints = calculatePath(startPos, targetPosition)
+    if not pathPoints or #pathPoints == 0 then
+        print("❌ 无法计算路径")
+        return false
+    end
+    
+    -- 保存路径
+    waypoints = pathPoints
+    currentWaypointIndex = 1
+    currentTarget = target
+    isMoving = true
+    
+    print(string.format("📌 路径点数量: %d", #waypoints))
+    
+    -- 开始移动
+    humanoid.AutoRotate = true
+    humanoid.WalkSpeed = CONFIG.MoveSpeed
+    
+    -- 移动循环
+    if moveConnection then
+        moveConnection:Disconnect()
+        moveConnection = nil
+    end
+    
+    local lastCheckPos = rootPart.Position
+    local stuckCounter = 0
+    
+    moveConnection = RunService.Heartbeat:Connect(function()
+        -- 检查是否被停止
+        if isStopped or not isMoving then
+            if moveConnection then
+                moveConnection:Disconnect()
+                moveConnection = nil
+            end
+            return
+        end
+        
+        -- 检查角色
+        if not char.Parent or not humanoid.Parent or not rootPart.Parent then
+            stopMoving()
+            return
+        end
+        
+        -- 检查目标是否还存在
+        if currentTarget and not currentTarget.Parent then
+            print("⚠️ 目标已消失")
+            stopMoving()
+            return
+        end
+        
+        -- 检查是否卡住
+        local currentPos = rootPart.Position
+        if (currentPos - lastCheckPos).Magnitude < 0.5 then
+            stuckCounter = stuckCounter + 1
+        else
+            stuckCounter = 0
+        end
+        lastCheckPos = currentPos
+        
+        -- 如果卡住超过30帧，重新计算路径
+        if stuckCounter > 30 then
+            print("🔄 检测到卡住，重新计算路径...")
+            stuckCounter = 0
+            local newPath = calculatePath(rootPart.Position, targetPosition)
+            if newPath and #newPath > 0 then
+                waypoints = newPath
+                currentWaypointIndex = 1
+            end
+        end
+        
+        -- 移动到当前路径点
+        if currentWaypointIndex <= #waypoints then
+            local targetWaypoint = waypoints[currentWaypointIndex]
+            local distToWaypoint = (rootPart.Position - targetWaypoint).Magnitude
+            
+            if distToWaypoint <= CONFIG.WaypointRadius then
+                currentWaypointIndex = currentWaypointIndex + 1
+                -- 更新进度条
+                if gui then
+                    local progress = (currentWaypointIndex / #waypoints) * 100
+                    gui.ProgressBar.Size = UDim2.new(math.min(progress / 100, 1), 0, 1, 0)
+                end
+            else
+                humanoid:MoveTo(targetWaypoint)
+            end
+        end
+        
+        -- 检查是否到达终点
+        if currentWaypointIndex > #waypoints then
+            local finalDist = (rootPart.Position - targetPosition).Magnitude
+            
+            if finalDist <= CONFIG.ArrivalRadius then
+                print("✅ 到达目的地！")
+                if selectionBox then
+                    selectionBox.Color3 = Color3.fromRGB(0, 255, 0)
+                end
+                if gui then
+                    gui.StatusLabel.Text = "✅ 已到达目标"
+                    gui.ProgressBar.Size = UDim2.new(1, 0, 1, 0)
+                end
+                stopMoving()
+                if selectionBox then
+                    task.wait(1)
+                    selectionBox:Destroy()
+                    selectionBox = nil
+                end
+            else
+                -- 继续走向最终目标
+                humanoid:MoveTo(targetPosition)
+            end
+        end
+    end)
+    
+    return true
+end
+
+-- ========== 点击检测 ==========
+
+local function setupClickDetection(gui)
+    local mouse = player:GetMouse()
+    
+    local function handleClick(target)
+        if not target then
+            return
+        end
+        
+        -- 忽略自己的角色
+        if target:IsDescendantOf(player.Character) then
+            gui.DebugLabel.Text = "🔧 点击了自己"
+            return
+        end
+        
+        -- 忽略 GUI
+        if target:IsA("GuiObject") then
+            return
+        end
+        
+        local targetName = target.Name
+        local parentName = target.Parent and target.Parent.Name or "无父级"
+        gui.DebugLabel.Text = string.format("🔧 点击: %s (%s)", targetName, parentName)
+        
+        if not isValidTarget(target) then
+            gui.StatusLabel.Text = "❌ 无效目标"
+            gui.DebugLabel.Text = "🔧 无效: " .. targetName
+            return
+        end
+        
+        local targetPos = getTargetPosition(target)
+        if not targetPos then
+            gui.StatusLabel.Text = "❌ 无法获取位置"
+            return
+        end
+        
+        local char = player.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            local dist = (char.HumanoidRootPart.Position - targetPos).Magnitude
+            if dist > CONFIG.MaxDistance then
+                gui.StatusLabel.Text = "⚠️ 太远！(" .. string.format("%.0f", dist) .. ")"
+                return
+            end
+        end
+        
+        -- 高亮
+        local highlightPart = target:IsA("BasePart") and target or nil
+        if not highlightPart then
+            for _, child in ipairs(target:GetChildren()) do
+                if child:IsA("BasePart") then
+                    highlightPart = child
+                    break
+                end
+            end
+        end
+        createSelectionBox(highlightPart)
+        
+        gui.TargetLabel.Text = "📍 " .. targetName
+        gui.StatusLabel.Text = "🚀 寻路中..."
+        gui.ProgressBar.Size = UDim2.new(0, 0, 1, 0)
+        
+        print(string.format("📍 目标: %s, 位置: %s", targetName, tostring(targetPos)))
+        
+        local success = moveToTarget(target)
+        if success then
+            gui.StatusLabel.Text = "🚶 移动中..."
+            gui.DebugLabel.Text = "🔧 寻路成功"
+        else
+            gui.StatusLabel.Text = "❌ 无法到达"
+            gui.DebugLabel.Text = "🔧 寻路失败"
+        end
+        
+        if UserInputService.VibrationEnabled then
+            UserInputService:Vibrate(0.1)
+        end
+    end
+    
+    -- 鼠标点击
+    mouse.Button1Down:Connect(function()
+        local target = mouse.Target
+        if target then
+            handleClick(target)
+        end
+    end)
+    
+    -- 触摸点击
+    UserInputService.TouchTap:Connect(function(touch, processed)
+        if processed then
+            return
+        end
+        
+        local camera = workspace.CurrentCamera
+        if not camera then
+            return
+        end
+        
+        local ray = camera:ViewportPointToRay(touch.Position.X, touch.Position.Y)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Blacklist
+        params.FilterDescendantsInstances = {player.Character}
+        params.IgnoreWater = true
+        
+        local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
+        if result then
+            handleClick(result.Instance)
+        end
+    end)
+end
+
+-- ========== 初始化 ==========
+
+local gui = createGUI()
+setupClickDetection(gui)
+
+print("✅ 自动寻路已启动（完整修复版）")
+print("📱 点击任意物体移动")
+print("⌨️ F2=开关界面, F3=停止")
+
+-- 快捷键
+UserInputService.InputBegan:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.F2 and input.UserInputType == Enum.UserInputType.Keyboard then
+        gui.MainFrame.Visible = not gui.MainFrame.Visible
+    end
+    if input.KeyCode == Enum.KeyCode.F3 and input.UserInputType == Enum.UserInputType.Keyboard then
+        stopMoving()
+        gui.StatusLabel.Text = "⏹️ 已停止"
+        gui.TargetLabel.Text = "📍 已取消"
+        gui.DebugLabel.Text = "🔧 快捷键停止"
+        gui.ProgressBar.Size = UDim2.new(0, 0, 1, 0)
+        if selectionBox then
+            selectionBox:Destroy()
+            selectionBox = nil
+        end
+    end
+end)
+
+-- 玩家死亡重置
+player.CharacterAdded:Connect(function()
+    stopMoving()
+end)
