@@ -1,4 +1,4 @@
--- 纯客户端AI自动寻路（完整修复版）
+-- 纯客户端AI自动寻路（回退修复版）
 local player = game.Players.LocalPlayer
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -7,9 +7,8 @@ local PathfindingService = game:GetService("PathfindingService")
 -- ========== 配置 ==========
 local CONFIG = {
     MoveSpeed = 16,
-    WaypointRadius = 2.5,
+    WaypointRadius = 3,
     MaxDistance = 500,
-    ArrivalRadius = 3.5,
 }
 
 -- ========== 变量 ==========
@@ -19,8 +18,6 @@ local isMoving = false
 local moveConnection = nil
 local selectionBox = nil
 local currentTarget = nil
-local targetPosition = nil
-local isStopped = false  -- 新增：停止标志
 
 -- ========== 创建 GUI ==========
 local function createGUI()
@@ -31,7 +28,7 @@ local function createGUI()
     
     local mainFrame = Instance.new("Frame")
     mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.new(0, 220, 0, 340)
+    mainFrame.Size = UDim2.new(0, 220, 0, 300)
     mainFrame.Position = UDim2.new(0.02, 0, 0.15, 0)
     mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 40)
     mainFrame.BackgroundTransparency = 0.1
@@ -115,16 +112,6 @@ local function createGUI()
     targetLabel.BackgroundTransparency = 1
     targetLabel.Parent = content
     
-    local debugLabel = Instance.new("TextLabel")
-    debugLabel.Name = "DebugLabel"
-    debugLabel.Size = UDim2.new(1, 0, 0, 25)
-    debugLabel.Text = "🔧 就绪"
-    debugLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-    debugLabel.TextSize = 11
-    debugLabel.TextWrapped = true
-    debugLabel.BackgroundTransparency = 1
-    debugLabel.Parent = content
-    
     local btnFrame = Instance.new("Frame")
     btnFrame.Size = UDim2.new(1, 0, 0, 85)
     btnFrame.BackgroundTransparency = 1
@@ -149,15 +136,35 @@ local function createGUI()
     stopCorner.CornerRadius = UDim.new(0, 5)
     stopCorner.Parent = stopBtn
     
+    -- ====== 修复：停止按钮 ======
     stopBtn.MouseButton1Click:Connect(function()
-        stopMoving()
-        statusLabel.Text = "⏹️ 已停止"
-        targetLabel.Text = "📍 已取消"
-        debugLabel.Text = "🔧 手动停止"
+        -- 直接调用停止函数
+        if moveConnection then
+            moveConnection:Disconnect()
+            moveConnection = nil
+        end
+        isMoving = false
+        
+        local char = player.Character
+        if char then
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                humanoid:MoveTo(char.HumanoidRootPart.Position)
+                humanoid.WalkSpeed = 16
+            end
+        end
+        
+        waypoints = {}
+        currentWaypointIndex = 1
+        currentTarget = nil
+        
         if selectionBox then
             selectionBox:Destroy()
             selectionBox = nil
         end
+        
+        statusLabel.Text = "⏹️ 已停止"
+        targetLabel.Text = "📍 已取消"
         print("🛑 停止按钮触发")
     end)
     
@@ -181,67 +188,15 @@ local function createGUI()
         end
     end)
     
-    -- 进度条
-    local progressFrame = Instance.new("Frame")
-    progressFrame.Size = UDim2.new(1, 0, 0, 8)
-    progressFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-    progressFrame.Parent = content
-    
-    local progressCorner = Instance.new("UICorner")
-    progressCorner.CornerRadius = UDim.new(0, 4)
-    progressCorner.Parent = progressFrame
-    
-    local progressBar = Instance.new("Frame")
-    progressBar.Name = "ProgressBar"
-    progressBar.Size = UDim2.new(0, 0, 1, 0)
-    progressBar.BackgroundColor3 = Color3.fromRGB(80, 200, 255)
-    progressBar.Parent = progressFrame
-    
-    local progressCorner2 = Instance.new("UICorner")
-    progressCorner2.CornerRadius = UDim.new(0, 4)
-    progressCorner2.Parent = progressBar
-    
     return {
         ScreenGui = screenGui,
         MainFrame = mainFrame,
         StatusLabel = statusLabel,
-        TargetLabel = targetLabel,
-        DebugLabel = debugLabel,
-        ProgressBar = progressBar
+        TargetLabel = targetLabel
     }
 end
 
 -- ========== 核心寻路函数 ==========
-
--- 停止移动（修复版 - 确保彻底停止）
-function stopMoving()
-    print("🛑 执行停止...")
-    isMoving = false
-    isStopped = true
-    
-    if moveConnection then
-        moveConnection:Disconnect()
-        moveConnection = nil
-    end
-    
-    local char = player.Character
-    if char then
-        local humanoid = char:FindFirstChildOfClass("Humanoid")
-        if humanoid then
-            -- 停止移动
-            humanoid:MoveTo(char.HumanoidRootPart.Position)
-            humanoid.WalkSpeed = 16
-            humanoid.AutoRotate = true
-        end
-    end
-    
-    waypoints = {}
-    currentWaypointIndex = 1
-    currentTarget = nil
-    targetPosition = nil
-    
-    print("✅ 已完全停止")
-end
 
 local function createSelectionBox(part)
     if selectionBox then
@@ -257,18 +212,16 @@ local function createSelectionBox(part)
     end
 end
 
--- 获取有效目标位置
+-- 获取目标位置
 local function getTargetPosition(target)
     if not target then
         return nil
     end
     
-    -- 如果是 Part
     if target:IsA("BasePart") then
         return target.Position
     end
     
-    -- 如果是 Model
     if target:IsA("Model") then
         local root = target:FindFirstChild("HumanoidRootPart")
         if root and root:IsA("BasePart") then
@@ -292,16 +245,14 @@ local function getTargetPosition(target)
     return nil
 end
 
--- 验证目标是否有效
+-- 验证目标
 local function isValidTarget(target)
     if not target or not target.Parent then
         return false
     end
-    
     if target:IsA("BasePart") then
         return true
     end
-    
     return getTargetPosition(target) ~= nil
 end
 
@@ -348,12 +299,8 @@ local function calculatePath(startPos, endPos)
     return result
 end
 
--- 开始移动到目标（修复版）
+-- 移动到目标
 local function moveToTarget(target)
-    -- 重置停止标志
-    isStopped = false
-    
-    -- 验证目标
     if not isValidTarget(target) then
         print("❌ 无效目标")
         return false
@@ -369,23 +316,22 @@ local function moveToTarget(target)
     local rootPart = char:FindFirstChild("HumanoidRootPart")
     
     if not humanoid or not rootPart then
-        print("❌ 找不到 Humanoid 或 RootPart")
+        print("❌ 找不到 Humanoid")
         return false
     end
     
-    -- 获取目标位置
-    targetPosition = getTargetPosition(target)
-    if not targetPosition then
+    local targetPos = getTargetPosition(target)
+    if not targetPos then
         print("❌ 无法获取目标位置")
         return false
     end
     
     local startPos = rootPart.Position
-    local distance = (startPos - targetPosition).Magnitude
+    local distance = (startPos - targetPos).Magnitude
     
-    print(string.format("📏 距离: %.1f 单位", distance))
+    print(string.format("📏 距离: %.1f", distance))
     
-    if distance < CONFIG.ArrivalRadius then
+    if distance < CONFIG.WaypointRadius then
         print("✅ 已在目标位置")
         return true
     end
@@ -396,119 +342,80 @@ local function moveToTarget(target)
     end
     
     -- 停止当前移动
-    stopMoving()
-    isStopped = false
+    if moveConnection then
+        moveConnection:Disconnect()
+        moveConnection = nil
+    end
+    isMoving = false
     
     -- 计算路径
-    local pathPoints = calculatePath(startPos, targetPosition)
+    local pathPoints = calculatePath(startPos, targetPos)
     if not pathPoints or #pathPoints == 0 then
-        print("❌ 无法计算路径")
+        print("❌ 路径计算失败")
         return false
     end
     
-    -- 保存路径
     waypoints = pathPoints
     currentWaypointIndex = 1
     currentTarget = target
     isMoving = true
     
-    print(string.format("📌 路径点数量: %d", #waypoints))
+    print(string.format("📌 路径点: %d 个", #waypoints))
     
-    -- 开始移动
     humanoid.AutoRotate = true
     humanoid.WalkSpeed = CONFIG.MoveSpeed
     
     -- 移动循环
-    if moveConnection then
-        moveConnection:Disconnect()
-        moveConnection = nil
-    end
-    
-    local lastCheckPos = rootPart.Position
-    local stuckCounter = 0
-    
     moveConnection = RunService.Heartbeat:Connect(function()
-        -- 检查是否被停止
-        if isStopped or not isMoving then
-            if moveConnection then
-                moveConnection:Disconnect()
-                moveConnection = nil
-            end
+        if not isMoving then
+            moveConnection:Disconnect()
+            moveConnection = nil
             return
         end
         
-        -- 检查角色
-        if not char.Parent or not humanoid.Parent or not rootPart.Parent then
-            stopMoving()
+        if not char.Parent or not humanoid.Parent then
+            isMoving = false
             return
         end
         
-        -- 检查目标是否还存在
         if currentTarget and not currentTarget.Parent then
-            print("⚠️ 目标已消失")
-            stopMoving()
+            print("⚠️ 目标消失")
+            isMoving = false
             return
         end
         
-        -- 检查是否卡住
-        local currentPos = rootPart.Position
-        if (currentPos - lastCheckPos).Magnitude < 0.5 then
-            stuckCounter = stuckCounter + 1
-        else
-            stuckCounter = 0
-        end
-        lastCheckPos = currentPos
-        
-        -- 如果卡住超过30帧，重新计算路径
-        if stuckCounter > 30 then
-            print("🔄 检测到卡住，重新计算路径...")
-            stuckCounter = 0
-            local newPath = calculatePath(rootPart.Position, targetPosition)
-            if newPath and #newPath > 0 then
-                waypoints = newPath
-                currentWaypointIndex = 1
-            end
-        end
-        
-        -- 移动到当前路径点
+        -- 移动到路径点
         if currentWaypointIndex <= #waypoints then
             local targetWaypoint = waypoints[currentWaypointIndex]
             local distToWaypoint = (rootPart.Position - targetWaypoint).Magnitude
             
             if distToWaypoint <= CONFIG.WaypointRadius then
                 currentWaypointIndex = currentWaypointIndex + 1
-                -- 更新进度条
-                if gui then
-                    local progress = (currentWaypointIndex / #waypoints) * 100
-                    gui.ProgressBar.Size = UDim2.new(math.min(progress / 100, 1), 0, 1, 0)
-                end
             else
                 humanoid:MoveTo(targetWaypoint)
             end
         end
         
-        -- 检查是否到达终点
+        -- 到达终点
         if currentWaypointIndex > #waypoints then
-            local finalDist = (rootPart.Position - targetPosition).Magnitude
+            local finalPos = getTargetPosition(currentTarget) or waypoints[#waypoints]
+            local finalDist = (rootPart.Position - finalPos).Magnitude
             
-            if finalDist <= CONFIG.ArrivalRadius then
+            if finalDist <= CONFIG.WaypointRadius then
                 print("✅ 到达目的地！")
+                isMoving = false
                 if selectionBox then
                     selectionBox.Color3 = Color3.fromRGB(0, 255, 0)
-                end
-                if gui then
-                    gui.StatusLabel.Text = "✅ 已到达目标"
-                    gui.ProgressBar.Size = UDim2.new(1, 0, 1, 0)
-                end
-                stopMoving()
-                if selectionBox then
                     task.wait(1)
                     selectionBox:Destroy()
                     selectionBox = nil
                 end
+                if moveConnection then
+                    moveConnection:Disconnect()
+                    moveConnection = nil
+                end
             else
-                -- 继续走向最终目标
-                humanoid:MoveTo(targetPosition)
+                humanoid:MoveTo(finalPos)
             end
         end
     end)
@@ -526,24 +433,20 @@ local function setupClickDetection(gui)
             return
         end
         
-        -- 忽略自己的角色
         if target:IsDescendantOf(player.Character) then
-            gui.DebugLabel.Text = "🔧 点击了自己"
             return
         end
         
-        -- 忽略 GUI
         if target:IsA("GuiObject") then
             return
         end
         
         local targetName = target.Name
         local parentName = target.Parent and target.Parent.Name or "无父级"
-        gui.DebugLabel.Text = string.format("🔧 点击: %s (%s)", targetName, parentName)
         
         if not isValidTarget(target) then
             gui.StatusLabel.Text = "❌ 无效目标"
-            gui.DebugLabel.Text = "🔧 无效: " .. targetName
+            print("❌ 无效目标: " .. targetName)
             return
         end
         
@@ -557,7 +460,7 @@ local function setupClickDetection(gui)
         if char and char:FindFirstChild("HumanoidRootPart") then
             local dist = (char.HumanoidRootPart.Position - targetPos).Magnitude
             if dist > CONFIG.MaxDistance then
-                gui.StatusLabel.Text = "⚠️ 太远！(" .. string.format("%.0f", dist) .. ")"
+                gui.StatusLabel.Text = "⚠️ 太远！"
                 return
             end
         end
@@ -574,19 +477,16 @@ local function setupClickDetection(gui)
         end
         createSelectionBox(highlightPart)
         
-        gui.TargetLabel.Text = "📍 " .. targetName
+        gui.TargetLabel.Text = "📍 " .. targetName .. " (" .. parentName .. ")"
         gui.StatusLabel.Text = "🚀 寻路中..."
-        gui.ProgressBar.Size = UDim2.new(0, 0, 1, 0)
         
         print(string.format("📍 目标: %s, 位置: %s", targetName, tostring(targetPos)))
         
         local success = moveToTarget(target)
         if success then
             gui.StatusLabel.Text = "🚶 移动中..."
-            gui.DebugLabel.Text = "🔧 寻路成功"
         else
             gui.StatusLabel.Text = "❌ 无法到达"
-            gui.DebugLabel.Text = "🔧 寻路失败"
         end
         
         if UserInputService.VibrationEnabled then
@@ -594,7 +494,6 @@ local function setupClickDetection(gui)
         end
     end
     
-    -- 鼠标点击
     mouse.Button1Down:Connect(function()
         local target = mouse.Target
         if target then
@@ -602,7 +501,6 @@ local function setupClickDetection(gui)
         end
     end)
     
-    -- 触摸点击
     UserInputService.TouchTap:Connect(function(touch, processed)
         if processed then
             return
@@ -631,21 +529,31 @@ end
 local gui = createGUI()
 setupClickDetection(gui)
 
-print("✅ 自动寻路已启动（完整修复版）")
-print("📱 点击任意物体移动")
-print("⌨️ F2=开关界面, F3=停止")
+print("✅ 自动寻路已启动（回退修复版）")
+print("📱 点击物体移动 | F2开关 | F3停止")
 
--- 快捷键
 UserInputService.InputBegan:Connect(function(input)
     if input.KeyCode == Enum.KeyCode.F2 and input.UserInputType == Enum.UserInputType.Keyboard then
         gui.MainFrame.Visible = not gui.MainFrame.Visible
     end
     if input.KeyCode == Enum.KeyCode.F3 and input.UserInputType == Enum.UserInputType.Keyboard then
-        stopMoving()
+        if moveConnection then
+            moveConnection:Disconnect()
+            moveConnection = nil
+        end
+        isMoving = false
+        local char = player.Character
+        if char then
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                humanoid:MoveTo(char.HumanoidRootPart.Position)
+                humanoid.WalkSpeed = 16
+            end
+        end
+        waypoints = {}
+        currentWaypointIndex = 1
         gui.StatusLabel.Text = "⏹️ 已停止"
         gui.TargetLabel.Text = "📍 已取消"
-        gui.DebugLabel.Text = "🔧 快捷键停止"
-        gui.ProgressBar.Size = UDim2.new(0, 0, 1, 0)
         if selectionBox then
             selectionBox:Destroy()
             selectionBox = nil
@@ -653,7 +561,10 @@ UserInputService.InputBegan:Connect(function(input)
     end
 end)
 
--- 玩家死亡重置
 player.CharacterAdded:Connect(function()
-    stopMoving()
+    if moveConnection then
+        moveConnection:Disconnect()
+        moveConnection = nil
+    end
+    isMoving = false
 end)
